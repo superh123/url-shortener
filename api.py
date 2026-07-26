@@ -32,7 +32,7 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379")
 r = redis.from_url(redis_url, decode_responses=True)
 
-REFILL_RATE = 5 #1 token per 5 seconds
+REFILL_RATE = 3 #1 token per 3 seconds
 BUCKET_CAPACITY = 10 #10 tokens maximum 
 
 # print("creating table")
@@ -51,6 +51,13 @@ async def getStats(code : str, req : Request):
     last_30_days = now - timedelta(days=30)
     
     with Session(engine) as session:
+
+        url_exists = session.execute(
+            select(urls.short_code).where(urls.short_code == code)
+        ).scalar_one_or_none()
+
+        if url_exists is None:
+            raise HTTPException(status_code=404, detail="Short code not found")
 
         query = select(
             func.count().label("clicks_lifetime"),
@@ -77,16 +84,14 @@ async def getLink(code : str, req : Request):
 
     await checkLimit(key)
 
-    session = Session(engine)    
+    with Session(engine) as session:
 
-    query = select(urls.original_url).where(urls.short_code == code)
+        query = select(urls.original_url).where(urls.short_code == code)
 
-    url = session.execute(query).scalar_one_or_none()
+        url = session.execute(query).scalar_one_or_none()
 
-    if url is None:
-        raise HTTPException(status_code=404, detail="Short code not found")
-    
-    with session:
+        if url is None:
+            raise HTTPException(status_code=404, detail="Short code not found")
         
         click_data = clicks(
             short_code = code,
@@ -97,11 +102,10 @@ async def getLink(code : str, req : Request):
         session.add(click_data)
 
         session.commit()
-
     
     return RedirectResponse(
         url=url,
-        status_code=status.HTTP_301_MOVED_PERMANENTLY
+        status_code=status.HTTP_307_TEMPORARY_REDIRECT
     )
 
 @app.post("/shorten")
@@ -120,22 +124,13 @@ async def postUrl(original_url : str, req : Request):
         result = session.scalar(select(urls).where(urls.original_url == original_url))
 
         if result is not None:
-
-            click = clicks(
-                short_code = result.short_code,
-                ip_address = req.client.host,
-                user_agent = req.headers.get("user-agent")
-            )
-
-            session.add(click)
-            session.commit()
-
             return result.short_code
         else:
             shortened_url =  "".join(random.choices(string.ascii_letters + string.digits, k = 6))
 
             result = session.scalar(select(urls.short_code).where(urls.short_code == shortened_url))
 
+            # Check if a short_code already exists, recreate if present
             while (result is not None):
                 shortened_url =  "".join(random.choices(string.ascii_letters + string.digits, k = 6))
                 result = session.scalar(select(urls.short_code).where(urls.short_code == shortened_url))

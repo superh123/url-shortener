@@ -62,7 +62,7 @@
             overflow: hidden;
         }
 
-        input[type="url"] {
+        input[type="text"] {
             flex: 1;
             border: none;
             padding: 14px 16px;
@@ -73,7 +73,7 @@
             outline: none;
         }
 
-        input[type="url"]::placeholder {
+        input[type="text"]::placeholder {
             color: #a39d8e;
         }
 
@@ -183,6 +183,63 @@
         .error.show {
             display: block;
         }
+
+        .chart {
+            margin-top: 14px;
+            padding-top: 16px;
+            border-top: 1px dashed var(--line);
+        }
+
+        .chart-title {
+            font-family: var(--mono);
+            font-size: 0.68rem;
+            color: #8a8574;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            margin-bottom: 12px;
+        }
+
+        .bars {
+            display: flex;
+            align-items: flex-end;
+            justify-content: space-between;
+            gap: 14px;
+            height: 110px;
+        }
+
+        .bar-col {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            height: 100%;
+            justify-content: flex-end;
+        }
+
+        .bar-value {
+            font-family: var(--mono);
+            font-size: 0.7rem;
+            color: var(--ink);
+            margin-bottom: 4px;
+        }
+
+        .bar {
+            width: 100%;
+            max-width: 44px;
+            background: var(--accent);
+            border-radius: 3px 3px 0 0;
+            min-height: 2px;
+            transition: height 0.4s ease;
+        }
+
+        .bar-label {
+            font-family: var(--mono);
+            font-size: 0.65rem;
+            color: #8a8574;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+            margin-top: 8px;
+        }
     </style>
 </head>
 
@@ -192,8 +249,9 @@
         <p class="tagline">Paste a long link. Get a short one. Watch the clicks.</p>
 
         <form id="shorten-form">
-            <input type="url" id="url-input" placeholder="https://example.com/a/very/long/path" required>
-            <button type="submit" id="submit-btn">Shorten</button>
+            <input type="text" id="url-input" placeholder="Paste a link to shorten, or a short code to see its stats"
+                required>
+            <button type="submit" id="submit-btn">Go</button>
         </form>
 
         <div class="error" id="error"></div>
@@ -221,6 +279,32 @@
                     <div class="label">30d</div>
                 </div>
             </div>
+
+            <div class="chart">
+                <div class="chart-title">Clicks by window</div>
+                <div class="bars">
+                    <div class="bar-col">
+                        <div class="bar-value" id="bar-value-24h">0</div>
+                        <div class="bar" id="bar-24h" style="height: 2px;"></div>
+                        <div class="bar-label">24h</div>
+                    </div>
+                    <div class="bar-col">
+                        <div class="bar-value" id="bar-value-7d">0</div>
+                        <div class="bar" id="bar-7d" style="height: 2px;"></div>
+                        <div class="bar-label">7d</div>
+                    </div>
+                    <div class="bar-col">
+                        <div class="bar-value" id="bar-value-30d">0</div>
+                        <div class="bar" id="bar-30d" style="height: 2px;"></div>
+                        <div class="bar-label">30d</div>
+                    </div>
+                    <div class="bar-col">
+                        <div class="bar-value" id="bar-value-lifetime">0</div>
+                        <div class="bar" id="bar-lifetime" style="height: 2px;"></div>
+                        <div class="bar-label">Lifetime</div>
+                    </div>
+                </div>
+            </div>
         </div>
 
 
@@ -244,61 +328,135 @@
         function showError(msg) {
             errorBox.textContent = msg;
             errorBox.classList.add('show');
-            resultBox.classList.remove('show');
         }
 
         function clearError() {
             errorBox.classList.remove('show');
         }
 
+        // What the pasted input means:
+        // - a foreign URL (has a protocol, not on our own origin)      -> shorten it
+        // - one of our own short links (protocol + our origin)          -> look up that code's stats
+        // - anything else (bare text, no protocol)                      -> treat as a short code, look up stats
+        function parseInput(raw) {
+            const value = raw.trim();
+
+            try {
+                const u = new URL(value); // throws if there's no protocol, e.g. bare "abc123"
+                if (u.origin === window.location.origin) {
+                    const code = u.pathname.replace(/^\/+/, '');
+                    return code ? { mode: 'lookup', code } : { mode: 'invalid' };
+                }
+                return { mode: 'shorten', url: value };
+            } catch (err) {
+                // No protocol -> not a full URL, treat as a bare short code
+                if (value && !/\s/.test(value)) {
+                    return { mode: 'lookup', code: value };
+                }
+                return { mode: 'invalid' };
+            }
+        }
+
+        urlInput.addEventListener('input', () => {
+            const parsed = parseInput(urlInput.value);
+            submitBtn.textContent = parsed.mode === 'shorten' ? 'Shorten' : 'Look up';
+        });
+
         async function fetchStats(code) {
             const res = await fetch(`${apiBase()}/${code}/stats`);
-            if (!res.ok) return null;
-            return res.json();
+            if (res.status === 429) {
+                return { rateLimited: true };
+            }
+            if (!res.ok) {
+                return { data: null };
+            }
+            return { data: await res.json() };
         }
 
         form.addEventListener('submit', async (e) => {
             e.preventDefault();
             clearError();
+
+            const parsed = parseInput(urlInput.value);
+
+            if (parsed.mode === 'invalid') {
+                showError('Enter a URL to shorten, or a short code to look up.');
+                return;
+            }
+
             submitBtn.disabled = true;
+            const originalLabel = submitBtn.textContent;
             submitBtn.textContent = '...';
 
             try {
-                const res = await fetch(`${apiBase()}/shorten`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ url: urlInput.value })
-                });
+                let code;
 
-                if (res.status === 429) {
-                    showError('Rate limit hit — wait a moment and try again.');
-                    return;
-                }
-                if (!res.ok) {
-                    showError(`Request failed (${res.status}).`);
-                    return;
+                if (parsed.mode === 'shorten') {
+                    const res = await fetch(`${apiBase()}/shorten`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ url: parsed.url })
+                    });
+
+                    if (res.status === 429) {
+                        showError('Rate limit hit — wait a moment and try again.');
+                        return;
+                    }
+                    if (!res.ok) {
+                        showError(`Request failed (${res.status}).`);
+                        return;
+                    }
+
+                    code = await res.json();
+                } else {
+                    // lookup mode — just resolve the code, no shortening involved
+                    code = parsed.code;
                 }
 
-                const code = await res.json();
                 const shortUrl = `${apiBase()}/${code}`;
                 shortLinkEl.textContent = shortUrl;
                 shortLinkEl.href = shortUrl;
                 resultBox.classList.add('show');
 
-                const stats = await fetchStats(code);
-                if (stats) {
+                const statsResult = await fetchStats(code);
+                if (statsResult.rateLimited) {
+                    showError('Rate limit hit — wait a moment and try again.');
+                } else if (statsResult.data) {
+                    const stats = statsResult.data;
                     document.getElementById('stat-lifetime').textContent = stats.lifetime_clicks;
                     document.getElementById('stat-24h').textContent = stats.clicks_24_hrs;
                     document.getElementById('stat-7d').textContent = stats.clicks_7_days;
                     document.getElementById('stat-30d').textContent = stats.clicks_30_days;
+                    renderChart(stats);
+                } else {
+                    showError("Couldn't load stats for that code.");
                 }
             } catch (err) {
                 showError('Could not reach the API. Please try again.');
             } finally {
                 submitBtn.disabled = false;
-                submitBtn.textContent = 'Shorten';
+                submitBtn.textContent = originalLabel;
             }
         });
+
+        const MAX_BAR_HEIGHT = 90; // px, leaves room for the value label above
+
+        function renderChart(stats) {
+            const points = [
+                { key: '24h', value: stats.clicks_24_hrs },
+                { key: '7d', value: stats.clicks_7_days },
+                { key: '30d', value: stats.clicks_30_days },
+                { key: 'lifetime', value: stats.lifetime_clicks }
+            ];
+
+            const max = Math.max(...points.map(p => p.value), 1); // avoid divide-by-zero
+
+            points.forEach(p => {
+                const heightPx = Math.max((p.value / max) * MAX_BAR_HEIGHT, 2);
+                document.getElementById(`bar-${p.key}`).style.height = `${heightPx}px`;
+                document.getElementById(`bar-value-${p.key}`).textContent = p.value;
+            });
+        }
 
         copyBtn.addEventListener('click', async () => {
             try {
