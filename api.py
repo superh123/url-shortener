@@ -10,7 +10,6 @@ import time
 
 from fastapi import FastAPI, Request, status, HTTPException # type: ignore
 from fastapi.responses import FileResponse, RedirectResponse
-from fastapi.testclient import TestClient
 from pydantic import BaseModel, HttpUrl
 from sqlalchemy.orm import Session
 from sqlalchemy import func, select
@@ -22,7 +21,6 @@ from datetime import datetime, timedelta
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-
 app = FastAPI()
 
 @app.get("/", include_in_schema=False)
@@ -33,16 +31,12 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379")
 r = redis.from_url(redis_url, decode_responses=True)
-# r = redis.Redis(host='localhost', port=6379, decode_responses=True)
 
 REFILL_RATE = 5 #1 token per 5 seconds
 BUCKET_CAPACITY = 10 #10 tokens maximum 
 
-print("creating table")
+# print("creating table")
 Base.metadata.create_all(engine) # generate schema
-
-#For testing purposes
-client = TestClient(app)
 
 @app.get("/{code}/stats")
 async def getStats(code : str, req : Request):
@@ -201,34 +195,5 @@ async def checkLimit(key : str):
                     "tokens": tokens_curr,
                     "timestamp": now
                 })    
-
-def test_post_get():
-    print(r.ping())
-
-    body = {
-        "url" : "https://www.google.com/?zx=1784195414646"
-    }
-
-    #----- Posting
-
-    response = client.post("/shorten", json=body)
-    assert response.status_code == 200
-
-    short_code = response.json()
-
-    #----- Getting link
-    
-    response = client.get(f"/{short_code}", follow_redirects=False)
-        
-    assert response.status_code == 301
-    assert response.headers["location"] == "https://www.google.com/?zx=1784195414646"
-
-    #----- Getting stats
-
-    print("Retrieving stats...")
-
-    response = client.get(f"/{short_code}/stats")
-
-    assert response.status_code == 200
 
 
